@@ -1,8 +1,9 @@
-"""Export a trained student for the Rust/Burn runtime.
+"""Export a trained student for the ONNX Runtime engine.
 
 Input: a `distill_cross_encoder` output directory. Output directory contents:
-  model.safetensors        fp32, HF DistilBERT canonical tensor names
-  model.fp16.safetensors   fp16 copy (mobile-friendly)
+  model.onnx               the runtime artifact (fp32, opset 17, dynamic
+                           batch/seq axes) — Warabi loads this via ort
+  model.safetensors        fp32 torch weights (HF interchange / re-export)
   config.json              standard DistilBertConfig
   vocab.txt                character vocabulary (Rust loads this)
   tokenizer.json etc.      HF fast tokenizer (Python-side parity/eval use)
@@ -10,16 +11,17 @@ Input: a `distill_cross_encoder` output directory. Output directory contents:
                            both runtimes (blend constants filled by
                            calibration; exporter carries them through)
   parity_cases.json        fixed probe inputs + fp32 logits; the Rust loader
-                           asserts max |diff| < 1e-3 on these at load time
+                           asserts allclose on these at load time
 
 Probe cases cover: plain conversion, empty context, long context hitting the
 max_length truncation rule, fullwidth/halfwidth distinctions, and UNK chars.
+The ONNX graph is verified against the torch logits on the probes before the
+export is accepted.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import shutil
 from pathlib import Path
@@ -74,15 +76,67 @@ def probe_logits(model, tokenizer, metadata: dict) -> list[float]:
     return logits
 
 
+def export_onnx(model, output_dir: Path) -> None:
+    ids = torch.randint(5, 8000, (2, 16))
+    mask = torch.ones_like(ids)
+    torch.onnx.export(
+        model,
+        (ids, mask),
+        output_dir / "model.onnx",
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        dynamic_axes={
+            "input_ids": {0: "batch", 1: "seq"},
+            "attention_mask": {0: "batch", 1: "seq"},
+            "logits": {0: "batch"},
+        },
+        opset_version=17,
+        dynamo=False,
+    )
+
+
+def verify_onnx(output_dir: Path, tokenizer, metadata: dict, expected: list[float]) -> float:
+    import onnxruntime
+
+    session = onnxruntime.InferenceSession(
+        str(output_dir / "model.onnx"), providers=["CPUExecutionProvider"]
+    )
+    drift = 0.0
+    for case, reference in zip(PROBE_CASES, expected):
+        encoded = batch_encode(
+            tokenizer,
+            {"context": case["context"], "reading": case["reading"],
+             "candidates": [{"text": case["candidate"]}]},
+            [0],
+            max_length=int(metadata["max_length"]),
+            context_chars=int(metadata["context_chars"]),
+            device=torch.device("cpu"),
+        )
+        logit = float(
+            session.run(
+                None,
+                {
+                    "input_ids": encoded["input_ids"].numpy(),
+                    "attention_mask": encoded["attention_mask"].numpy(),
+                },
+            )[0].squeeze()
+        )
+        drift = max(drift, abs(logit - reference))
+    return drift
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.output_dir.resolve() == args.model_dir.resolve():
+        # Windows keeps loaded safetensors mmap-locked; in-place rewrites fail.
+        raise SystemExit("--output-dir must differ from --model-dir")
     metadata = json.loads((args.model_dir / "ime_reranker.json").read_text(encoding="utf-8"))
     if args.dictionary_cost_weight is not None:
         metadata["dictionary_cost_weight"] = args.dictionary_cost_weight
         metadata["calibration_pending"] = False
     if args.model_candidate_count is not None:
         metadata["model_candidate_count"] = args.model_candidate_count
-    metadata.setdefault("model_candidate_count", 64)
+    metadata.setdefault("model_candidate_count", 32)
     if "dictionary_cost_weight" not in metadata:
         print("warning: exporting without a calibrated dictionary_cost_weight (0.19 default)")
         metadata["dictionary_cost_weight"] = 0.19
@@ -91,33 +145,22 @@ def main(argv: list[str] | None = None) -> int:
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    # Probe on the pristine fp32 weights BEFORE any dtype conversion.
     fp32_logits = probe_logits(model, tokenizer, metadata)
-    # fp32 canonical + fp16 copy, HF tensor names preserved by save_pretrained.
-    # half() mutates in place, so the fp16 copy comes from a deep copy.
     model.save_pretrained(args.output_dir, safe_serialization=True)
-    copy.deepcopy(model).half().save_pretrained(
-        args.output_dir / "fp16", safe_serialization=True
-    )
-    shutil.move(
-        args.output_dir / "fp16" / "model.safetensors",
-        args.output_dir / "model.fp16.safetensors",
-    )
-    shutil.rmtree(args.output_dir / "fp16")
     tokenizer.save_pretrained(args.output_dir)
+    export_onnx(model, args.output_dir)
     vocab_source = args.model_dir / "vocab.txt"
     if not vocab_source.is_file():
         raise SystemExit(f"vocab.txt not found next to the model: {vocab_source}")
     shutil.copy2(vocab_source, args.output_dir / "vocab.txt")
 
     cases = [{**case, "logit": logit} for case, logit in zip(PROBE_CASES, fp32_logits)]
-    # allclose-style gate: |rust - python| <= atol + rtol*|python|. Framework
-    # fp32 drift for the 768-wide trunk measures up to ~0.027 absolute
-    # (dominated by activation scale, not output scale; v6b hit 0.026 on the
-    # halfwidth-digit probe); 0.03 stays an order below blend decision
-    # margins.
+    # allclose-style gate: |ort - torch| <= atol + rtol*|torch|. ONNX runs the
+    # same fp32 graph, so drift stays ~1e-5; the tolerance keeps headroom for
+    # kernel differences across ort versions/platforms while staying two
+    # orders below blend decision margins.
     (args.output_dir / "parity_cases.json").write_text(
-        json.dumps({"atol": 3.0e-2, "rtol": 5e-3, "cases": cases}, ensure_ascii=False, indent=2)
+        json.dumps({"atol": 1e-3, "rtol": 1e-4, "cases": cases}, ensure_ascii=False, indent=2)
         + "\n",
         encoding="utf-8",
     )
@@ -126,24 +169,10 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
 
-    # Reload parity: fp16 weights must reproduce fp32 logits within tolerance.
-    from safetensors.torch import load_file
-
-    fp16_model = DistilBertForSequenceClassification.from_pretrained(args.output_dir)
-    fp16_state = load_file(args.output_dir / "model.fp16.safetensors")
-    fp16_model.load_state_dict(
-        {key: value.float() for key, value in fp16_state.items()}, strict=True
-    )
-    drift = max(
-        abs(a - b)
-        for a, b in zip(
-            probe_logits(fp16_model, tokenizer, metadata),
-            [case["logit"] for case in cases],
-        )
-    )
-    print(json.dumps({"output": str(args.output_dir), "fp16_probe_drift": drift}))
-    if drift > 0.05:
-        raise SystemExit(f"fp16 drift {drift} exceeds tolerance")
+    drift = verify_onnx(args.output_dir, tokenizer, metadata, fp32_logits)
+    print(json.dumps({"output": str(args.output_dir), "onnx_probe_drift": drift}))
+    if drift > 1e-3:
+        raise SystemExit(f"onnx drift {drift} exceeds tolerance")
     return 0
 
 
