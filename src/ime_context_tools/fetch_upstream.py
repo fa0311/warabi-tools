@@ -4,10 +4,10 @@ Makes ime-context-tools self-contained: no path may point outside this
 repository. Idempotent (snapshot_download caches revisions).
 
 Layout under --output-dir (default artifacts/upstream/):
-  teacher/            fa0311/ime-context-reranker-v1  (model)
-  dictionary-core/    fa0311/ime-dictionary-core      (dataset: sqlite + tsv)
-  dictionary-extended-gpl/  fa0311/ime-dictionary-extended-gpl (optional)
-  context-dataset/    fa0311/ime-context-dataset      (raw context rows)
+  teacher/            fa0311/warabi-reranker-v1  (model)
+  dictionary-core/    fa0311/warabi-dictionary-core      (dataset: sqlite + tsv)
+  dictionary-extended-gpl/  fa0311/warabi-dictionary-extended-gpl (optional)
+  context-dataset/    fa0311/warabi-context-dataset      (raw context rows)
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 REPOS = [
-    ("teacher", "fa0311/ime-context-reranker-v1", "model", True),
-    ("dictionary-core", "fa0311/ime-dictionary-core", "dataset", True),
-    ("dictionary-extended-gpl", "fa0311/ime-dictionary-extended-gpl", "dataset", False),
-    ("context-dataset", "fa0311/ime-context-dataset", "dataset", True),
+    ("teacher", "fa0311/warabi-reranker-v1", "model", True),
+    ("dictionary-core", "fa0311/warabi-dictionary-core", "dataset", True),
+    ("dictionary-extended-gpl", "fa0311/warabi-dictionary-extended-gpl", "dataset", False),
+    ("context-dataset", "fa0311/warabi-context-dataset", "dataset", True),
 ]
 
 

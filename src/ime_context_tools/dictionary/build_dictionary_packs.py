@@ -616,12 +616,12 @@ def write_distribution_documents(
         PACK_CORE: (
             "For the larger GPL-licensed vocabulary, see "
             "[ime-dictionary-extended-gpl](https://huggingface.co/datasets/"
-            "fa0311/ime-dictionary-extended-gpl)."
+            "fa0311/warabi-dictionary-extended-gpl)."
         ),
         PACK_EXTENDED: (
             "For the smaller core distribution, see "
             "[ime-dictionary-core](https://huggingface.co/datasets/"
-            "fa0311/ime-dictionary-core)."
+            "fa0311/warabi-dictionary-core)."
         ),
     }[pack_name]
     merge_order = {

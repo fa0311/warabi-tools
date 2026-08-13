@@ -1,7 +1,7 @@
 """Materialize candidate lists for raw context-dataset rows.
 
-Self-contained data path: raw rows (fa0311/ime-context-dataset) + the
-dictionary pack (fa0311/ime-dictionary-core) + the Rust engine (`ime-cli
+Self-contained data path: raw rows (fa0311/warabi-context-dataset) + the
+dictionary pack (fa0311/warabi-dictionary-core) + the Rust engine (`ime-cli
 convert-dump`) produce train/dev files in the same shape the trainer and
 teacher scorer consume:
 
