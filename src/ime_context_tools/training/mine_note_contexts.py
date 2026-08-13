@@ -43,6 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-reading-chars", type=int, default=2)
     parser.add_argument("--min-entry-candidates", type=int, default=2)
     parser.add_argument(
+        "--bunsetsu",
+        action="store_true",
+        help="bunsetsu mode: join a content word with its trailing 助詞/助動詞 "
+        "into one conversion unit (いしゃ+に -> いしゃに / 医者に) — the "
+        "granularity real IME input uses. Proper-noun heads are skipped "
+        "(mined name data is eval-only) and no ambiguity filter applies "
+        "(dictionary-entry count is not the real candidate competition)",
+    )
+    parser.add_argument(
         "--proper-nouns",
         action="store_true",
         help="proper-noun mode: mine 固有名詞 tokens only and accept unique "
@@ -58,6 +67,78 @@ def kata2hira(reading: str) -> str:
 
 def has_kanji(surface: str) -> bool:
     return any("一" <= char <= "鿿" for char in surface)
+
+
+def convertible(surface: str) -> bool:
+    """Kanji or katakana head: something the IME actually converts to."""
+    return has_kanji(surface) or any("ァ" <= char <= "ヿ" for char in surface)
+
+
+APPEND_POS = {"助詞", "助動詞"}
+
+
+def mine_article_bunsetsu(
+    mecab: dict,
+    dictionary: DictionaryFilter,
+    args: argparse.Namespace,
+) -> list[dict[str, str]]:
+    surfaces = mecab["surface"]
+    readings = mecab["reading"]
+    pos = mecab["pos"]
+    pos1 = mecab.get("pos1") or [None] * len(surfaces)
+    rows: list[dict[str, str]] = []
+    text_so_far: list[str] = []
+    length = 0
+    index = 0
+    while index < len(surfaces):
+        surface, reading = surfaces[index], readings[index]
+        if surface is None:
+            index += 1
+            continue
+        head_eligible = (
+            reading is not None
+            and pos[index] in CONTENT_POS
+            and pos1[index] != "固有名詞"
+            and convertible(surface)
+            and length >= args.min_context_chars
+        )
+        emitted = False
+        if head_eligible:
+            end = index + 1
+            while (
+                end < len(surfaces)
+                and surfaces[end] is not None
+                and readings[end] is not None
+                and pos[end] in APPEND_POS
+            ):
+                end += 1
+            head_hira = kata2hira(reading)
+            if (
+                end > index + 1
+                and head_hira != surface
+                and dictionary.pair_exists(head_hira, surface)
+            ):
+                joined_reading = "".join(
+                    kata2hira(readings[i]) for i in range(index, end)
+                )
+                joined_target = "".join(surfaces[i] for i in range(index, end))
+                if len(joined_reading) >= args.min_reading_chars:
+                    context = "".join(text_so_far)[-args.context_chars :]
+                    rows.append(
+                        {"context": context, "reading": joined_reading, "target": joined_target}
+                    )
+                    for i in range(index, end):
+                        text_so_far.append(surfaces[i])
+                        length += len(surfaces[i])
+                    index = end
+                    emitted = True
+                    if len(rows) >= args.max_per_article:
+                        break
+        if not emitted:
+            text_so_far.append(surface)
+            length += len(surface)
+            index += 1
+    return rows
 
 
 class DictionaryFilter:
@@ -157,7 +238,8 @@ def main(argv: list[str] | None = None) -> int:
             for batch in pq.ParquetFile(path).iter_batches(columns=["mecab"], batch_size=256):
                 for row in batch.to_pylist():
                     articles += 1
-                    for mined in mine_article(row["mecab"], dictionary, args):
+                    miner = mine_article_bunsetsu if args.bunsetsu else mine_article
+                    for mined in miner(row["mecab"], dictionary, args):
                         key = (mined["context"], mined["reading"], mined["target"])
                         if key in seen:
                             continue
