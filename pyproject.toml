@@ -1,0 +1,78 @@
+[project]
+name = "ime-context-tools"
+version = "0.1.0"
+description = "Distillation pipeline and Rust core for the IME context reranker"
+requires-python = ">=3.11"
+dependencies = [
+    # teacher tokenizer (MeCab + SentencePiece, trust_remote_code)
+    "fugashi>=1.5.2",
+    "huggingface-hub>=0.34",
+    "jaconv>=0.5.0",
+    "lxml>=6.1.1",
+    "numpy>=2.4.0",
+    "orjson>=3.11.9",
+    "protobuf>=6.33.0",
+    "pyarrow>=21.0",
+    "pytest>=9.1.1",
+    # reference for the Rust romaji table + normalization goldens
+    "romkan2>=0.1.1",
+    "safetensors>=0.4.5",
+    "scikit-learn>=1.9.0",
+    "sentencepiece>=0.2.1",
+    "tokenizers>=0.20",
+    "torch>=2.11.0",
+    "tqdm>=4.70.0",
+    "transformers>=4.55.0",
+    "unidic-lite>=1.0.8",
+]
+
+[project.scripts]
+ime-build-char-tokenizer = "ime_context_tools.training.build_char_tokenizer:main"
+ime-materialize = "ime_context_tools.training.materialize_candidates:main"
+ime-mine-note = "ime_context_tools.training.mine_note_contexts:main"
+ime-augment-lexical = "ime_context_tools.training.augment_lexical_rows:main"
+ime-strip-context = "ime_context_tools.training.strip_context_rows:main"
+ime-init-from-teacher = "ime_context_tools.training.init_from_teacher:main"
+ime-init-cascade = "ime_context_tools.training.init_cascade_student:main"
+ime-score-teacher = "ime_context_tools.training.score_teacher_cross_encoder:main"
+ime-distill = "ime_context_tools.training.distill_cross_encoder:main"
+ime-export-reranker = "ime_context_tools.training.export_burn_reranker:main"
+ime-eval-student = "ime_context_tools.evaluation.evaluate_student_runtime:main"
+ime-gen-romaji-table = "ime_context_tools.codegen.gen_romaji_table:main"
+ime-dict-extract = "ime_context_tools.dictionary.extract_dictionaries:main"
+ime-dict-rebuild = "ime_context_tools.dictionary.rebuild_calibrated_dictionary:main"
+ime-dict-packs = "ime_context_tools.dictionary.build_dictionary_packs:main"
+ime-dict-benchmark = "ime_context_tools.dictionary.benchmark_dictionary_sources:main"
+ime-dict-refresh = "ime_context_tools.dictionary.refresh_pack_annotations:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ime_context_tools"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.2",
+]
