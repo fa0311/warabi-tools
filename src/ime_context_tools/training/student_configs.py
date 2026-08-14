@@ -51,6 +51,10 @@ class StudentSpec:
 # cascade-distillation teacher for the smaller tiers.
 STUDENT_SPECS = {
     "lite": StudentSpec("lite", n_layers=4, dim=256, n_heads=4, hidden_dim=1024),
+    # depth-vs-width probe: lite's width with max's depth. If it approaches
+    # standard's quality at half the parameters, depth (composition steps)
+    # is what the character-level task pays for, not per-layer capacity.
+    "deep-lite": StudentSpec("deep-lite", n_layers=6, dim=256, n_heads=4, hidden_dim=1024),
     "standard": StudentSpec("standard", n_layers=4, dim=512, n_heads=8, hidden_dim=2048),
     "max": StudentSpec("max", n_layers=6, dim=768, n_heads=12, hidden_dim=3072),
 }
@@ -63,6 +67,7 @@ STUDENT_SPECS = {
 # stay comparable to the earlier 159k-row/10-epoch schedule.
 TRAINING_DEFAULTS = {
     "lite": {"epochs": 6, "learning_rate": 3e-4, "query_batch_size": 32, "grad_accum": 1},
+    "deep-lite": {"epochs": 6, "learning_rate": 3e-4, "query_batch_size": 32, "grad_accum": 1},
     "standard": {"epochs": 5, "learning_rate": 2.5e-4, "query_batch_size": 24, "grad_accum": 2},
     # 12x3 OOMed on long-context buckets (16GB card); 9x4 keeps the same
     # effective 36 rows with a 25% lower peak.
