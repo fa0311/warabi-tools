@@ -21,7 +21,22 @@ import shutil
 from pathlib import Path
 
 import numpy
+import onnx
+import orjson
 import torch
+from onnx import numpy_helper
+from onnxruntime import InferenceSession
+from onnxruntime.quantization import (
+    CalibrationDataReader,
+    QuantFormat,
+    QuantType,
+    quantize,
+    quantize_static,
+)
+from onnxruntime.quantization.execution_providers.qnn import (
+    get_qnn_qdq_config,
+    qnn_preprocess_model,
+)
 from transformers import AutoTokenizer
 
 from .distill_cross_encoder import batch_encode
@@ -42,6 +57,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-quant-drift", type=float, default=0.5,
         help="max mean |fp32 - int8| probe logit shift accepted",
+    )
+    parser.add_argument(
+        "--op-types", default="MatMul,Gemm",
+        help="ops to quantize (transformer recipe: linear layers only; "
+        "Gather/LayerNorm/Softmax stay high-precision)",
+    )
+    parser.add_argument(
+        "--activation-bits", type=int, choices=(8, 16), default=16,
+        help="8 = HTP's most-trodden a8w8 path; 16 = higher precision "
+        "(but must map onto the EP's native 16x8 kernels to be fast)",
+    )
+    parser.add_argument(
+        "--exclude-ops", default="",
+        help="comma-separated op types to exclude from quantization "
+        "(bisection tool for accuracy debugging)",
+    )
+    parser.add_argument(
+        "--recipe", choices=("generic", "qnn"), default="generic",
+        help="qnn = ORT's QNN-specific flow: qnn_preprocess_model fuses the "
+        "exporter's LayerNorm/GELU fragments into single ops (fewer NPU "
+        "partitions), then get_qnn_qdq_config quantizes to HTP's kernel "
+        "support matrix instead of hand-picked settings",
     )
     return parser
 
@@ -67,16 +104,28 @@ def encode_padded(tokenizer, metadata, context, reading, candidates):
     return padded_ids, padded_mask
 
 
-def main(argv: list[str] | None = None) -> int:
-    import orjson
-    from onnxruntime import InferenceSession
-    from onnxruntime.quantization import (
-        CalibrationDataReader,
-        QuantFormat,
-        QuantType,
-        quantize_static,
-    )
+def mask_nodes(model_path) -> list[str]:
+    """Nodes fed by non-finite or huge constants (the -inf attention mask)."""
+    model = onnx.load(str(model_path))
+    tensors = {i.name: numpy_helper.to_array(i) for i in model.graph.initializer}
+    for node in model.graph.node:
+        if node.op_type == "Constant":
+            for attr in node.attribute:
+                if attr.name == "value":
+                    tensors[node.output[0]] = numpy_helper.to_array(attr.t)
+    names = []
+    for node in model.graph.node:
+        for name in node.input:
+            array = tensors.get(name)
+            if array is not None and array.size and (
+                not numpy.isfinite(array).all() or numpy.abs(array).max() > 1e4
+            ):
+                names.append(node.name)
+                break
+    return names
 
+
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.output_dir.resolve() == args.model_dir.resolve():
         raise SystemExit("--output-dir must differ from --model-dir")
@@ -108,15 +157,52 @@ def main(argv: list[str] | None = None) -> int:
             return {"input_ids": ids, "attention_mask": mask}
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    quantize_static(
-        model_input=str(args.model_dir / "model.onnx"),
-        model_output=str(args.output_dir / "model.onnx"),
-        calibration_data_reader=Reader(),
-        quant_format=QuantFormat.QDQ,
-        activation_type=QuantType.QUInt16,
-        weight_type=QuantType.QInt8,
-        per_channel=True,
-    )
+    if args.recipe == "qnn":
+        preprocessed = args.output_dir / "model.preprocessed.onnx"
+        changed = qnn_preprocess_model(
+            str(args.model_dir / "model.onnx"), str(preprocessed), fuse_layernorm=True
+        )
+        source = preprocessed if changed else args.model_dir / "model.onnx"
+        qnn_config = get_qnn_qdq_config(
+            str(source),
+            Reader(),
+            activation_type=(
+                QuantType.QUInt16 if args.activation_bits == 16 else QuantType.QUInt8
+            ),
+            weight_type=QuantType.QUInt8,
+        )
+        # The attention mask path injects -inf ahead of Softmax (one Where per
+        # layer); quantizing a non-finite tensor collapses its scale and takes
+        # the whole head down. Keep those nodes float.
+        qnn_config.nodes_to_exclude = list(
+            dict.fromkeys((qnn_config.nodes_to_exclude or []) + mask_nodes(source))
+        )
+        print(json.dumps({"mask_nodes_excluded": qnn_config.nodes_to_exclude}))
+        quantize(str(source), str(args.output_dir / "model.onnx"), qnn_config)
+        if preprocessed.is_file():
+            preprocessed.unlink()
+        print(json.dumps({"qnn_preprocess_fused": bool(changed)}))
+    else:
+        exclusions = mask_nodes(args.model_dir / "model.onnx")
+        if args.exclude_ops:
+            skip = set(args.exclude_ops.split(","))
+            graph = onnx.load(str(args.model_dir / "model.onnx")).graph
+            exclusions += [node.name for node in graph.node if node.op_type in skip]
+        print(json.dumps({"mask_nodes_excluded": exclusions}))
+        op_types = [name for name in args.op_types.split(",") if name]
+        quantize_static(
+            model_input=str(args.model_dir / "model.onnx"),
+            model_output=str(args.output_dir / "model.onnx"),
+            calibration_data_reader=Reader(),
+            quant_format=QuantFormat.QDQ,
+            activation_type=(
+                QuantType.QUInt16 if args.activation_bits == 16 else QuantType.QUInt8
+            ),
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+            op_types_to_quantize=op_types or None,
+            nodes_to_exclude=exclusions,
+        )
 
     for name in ("ime_reranker.json", "vocab.txt", "tokenizer.json", "tokenizer_config.json"):
         source = args.model_dir / name
