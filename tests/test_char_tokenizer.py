@@ -40,6 +40,13 @@ def test_frequency_fills_remaining_slots() -> None:
     assert body == ["あ", "い", "🍣"]  # 🍺 loses the last slot
 
 
+def test_body_is_codepoint_ordered() -> None:
+    corpus = Counter({"ん": 1, "あ": 100, "🍣": 10, "A": 3})
+    vocab = build_vocab(corpus, vocab_size=64, base_chars=set())
+    body = vocab[5:]
+    assert body == sorted(body, key=ord)
+
+
 def test_guaranteed_base_includes_jis_kanji_and_halfwidth_kana() -> None:
     base = guaranteed_chars()
     assert {"亜", "腕", "熙", "ｱ", "ﾝ", "、", "。", "Ａ", "ー"} <= base

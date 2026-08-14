@@ -6,7 +6,10 @@ the Rust runtime only needs a `HashMap<char, u32>` with `[UNK]` fallback.
 
 Vocabulary layout (vocab.txt, line number - 1 == token id):
   0..4   [PAD] [UNK] [CLS] [SEP] [MASK]        (fixed ids, teacher-compatible)
-  5..    every remaining character, ordered by (corpus frequency desc, codepoint)
+  5..    every remaining character, in codepoint order — ids are arbitrary to
+         the model, and codepoint order groups the file by Unicode block so a
+         human can audit it. (Selection into the vocab is by corpus frequency;
+         only the final ordering is codepoint.)
 
 The guaranteed base set (always included, even at zero corpus frequency) is
 every character encodable as strict Shift_JIS: ASCII printable, halfwidth
@@ -201,7 +204,10 @@ def build_vocab(
         if len(selected) >= slots:
             break
         selected.add(char)
-    return SPECIAL_TOKENS + sorted(selected, key=sort_key)
+    # Codepoint order: token ids carry no meaning, and block-grouped output
+    # keeps vocab.txt reviewable by eye. NOTE: any reorder is id-breaking for
+    # existing weights — this only shapes future builds.
+    return SPECIAL_TOKENS + sorted(selected, key=ord)
 
 
 def unk_statistics(corpus_counts: Counter[str], vocab: list[str]) -> dict[str, Any]:
