@@ -55,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="calibrated blend weight; omit to keep the value already in ime_reranker.json",
     )
     parser.add_argument("--model-candidate-count", type=int)
+    parser.add_argument(
+        "--static-shape",
+        metavar="BATCHxSEQ",
+        help="export with fixed input dims (e.g. 32x224) for NPU execution "
+        "providers that reject dynamic axes (QNN HTP, Intel NPU). The engine "
+        "pads batches at runtime; metadata records the shape",
+    )
     return parser
 
 
@@ -76,8 +83,17 @@ def probe_logits(model, tokenizer, metadata: dict) -> list[float]:
     return logits
 
 
-def export_onnx(model, output_dir: Path) -> None:
-    ids = torch.randint(5, 8000, (2, 16))
+def export_onnx(model, output_dir: Path, static_shape: tuple[int, int] | None = None) -> None:
+    if static_shape is None:
+        ids = torch.randint(5, 8000, (2, 16))
+        dynamic_axes = {
+            "input_ids": {0: "batch", 1: "seq"},
+            "attention_mask": {0: "batch", 1: "seq"},
+            "logits": {0: "batch"},
+        }
+    else:
+        ids = torch.randint(5, 8000, static_shape)
+        dynamic_axes = None
     mask = torch.ones_like(ids)
     torch.onnx.export(
         model,
@@ -85,17 +101,20 @@ def export_onnx(model, output_dir: Path) -> None:
         output_dir / "model.onnx",
         input_names=["input_ids", "attention_mask"],
         output_names=["logits"],
-        dynamic_axes={
-            "input_ids": {0: "batch", 1: "seq"},
-            "attention_mask": {0: "batch", 1: "seq"},
-            "logits": {0: "batch"},
-        },
+        dynamic_axes=dynamic_axes,
         opset_version=17,
         dynamo=False,
     )
 
 
-def verify_onnx(output_dir: Path, tokenizer, metadata: dict, expected: list[float]) -> float:
+def verify_onnx(
+    output_dir: Path,
+    tokenizer,
+    metadata: dict,
+    expected: list[float],
+    static_shape: tuple[int, int] | None = None,
+) -> float:
+    import numpy
     import onnxruntime
 
     session = onnxruntime.InferenceSession(
@@ -112,14 +131,17 @@ def verify_onnx(output_dir: Path, tokenizer, metadata: dict, expected: list[floa
             context_chars=int(metadata["context_chars"]),
             device=torch.device("cpu"),
         )
+        ids = encoded["input_ids"].numpy()
+        mask = encoded["attention_mask"].numpy()
+        if static_shape is not None:
+            batch, seq = static_shape
+            padded_ids = numpy.zeros((batch, seq), dtype=ids.dtype)
+            padded_mask = numpy.zeros((batch, seq), dtype=mask.dtype)
+            padded_ids[: ids.shape[0], : ids.shape[1]] = ids
+            padded_mask[: mask.shape[0], : mask.shape[1]] = mask
+            ids, mask = padded_ids, padded_mask
         logit = float(
-            session.run(
-                None,
-                {
-                    "input_ids": encoded["input_ids"].numpy(),
-                    "attention_mask": encoded["attention_mask"].numpy(),
-                },
-            )[0].squeeze()
+            session.run(None, {"input_ids": ids, "attention_mask": mask})[0][0].squeeze()
         )
         drift = max(drift, abs(logit - reference))
     return drift
@@ -137,6 +159,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.model_candidate_count is not None:
         metadata["model_candidate_count"] = args.model_candidate_count
     metadata.setdefault("model_candidate_count", 32)
+    static_shape: tuple[int, int] | None = None
+    if args.static_shape:
+        batch, seq = (int(part) for part in args.static_shape.lower().split("x"))
+        if seq != int(metadata["max_length"]):
+            raise SystemExit(f"static seq {seq} must equal max_length {metadata['max_length']}")
+        static_shape = (batch, seq)
+        metadata["static_shape"] = {"batch": batch, "seq": seq}
+    else:
+        metadata.pop("static_shape", None)
     if "dictionary_cost_weight" not in metadata:
         print("warning: exporting without a calibrated dictionary_cost_weight (0.19 default)")
         metadata["dictionary_cost_weight"] = 0.19
@@ -148,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     fp32_logits = probe_logits(model, tokenizer, metadata)
     model.save_pretrained(args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(args.output_dir)
-    export_onnx(model, args.output_dir)
+    export_onnx(model, args.output_dir, static_shape)
     vocab_source = args.model_dir / "vocab.txt"
     if not vocab_source.is_file():
         raise SystemExit(f"vocab.txt not found next to the model: {vocab_source}")
@@ -169,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
 
-    drift = verify_onnx(args.output_dir, tokenizer, metadata, fp32_logits)
+    drift = verify_onnx(args.output_dir, tokenizer, metadata, fp32_logits, static_shape)
     print(json.dumps({"output": str(args.output_dir), "onnx_probe_drift": drift}))
     if drift > 1e-3:
         raise SystemExit(f"onnx drift {drift} exceeds tolerance")
