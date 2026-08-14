@@ -70,7 +70,12 @@ def encode_padded(tokenizer, metadata, context, reading, candidates):
 def main(argv: list[str] | None = None) -> int:
     import orjson
     from onnxruntime import InferenceSession
-    from onnxruntime.quantization import CalibrationDataReader, QuantType, quantize_static
+    from onnxruntime.quantization import (
+        CalibrationDataReader,
+        QuantFormat,
+        QuantType,
+        quantize_static,
+    )
 
     args = build_parser().parse_args(argv)
     if args.output_dir.resolve() == args.model_dir.resolve():
@@ -107,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         model_input=str(args.model_dir / "model.onnx"),
         model_output=str(args.output_dir / "model.onnx"),
         calibration_data_reader=Reader(),
-        quant_format="QDQ",
+        quant_format=QuantFormat.QDQ,
         activation_type=QuantType.QUInt16,
         weight_type=QuantType.QInt8,
         per_channel=True,
