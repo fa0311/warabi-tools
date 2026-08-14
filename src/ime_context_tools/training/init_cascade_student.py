@@ -51,7 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     position = teacher.distilbert.embeddings.position_embeddings.weight.data
 
     spec = STUDENT_SPECS[args.student]
-    student = DistilBertForSequenceClassification(spec.config())
+    config = spec.config()
+    # The vocabulary belongs to the teacher lineage, not the tier spec: a
+    # vocab-extended teacher (v8: 16,384) must produce a matching student.
+    config.vocab_size = word.shape[0]
+    student = DistilBertForSequenceClassification(config)
     dim = spec.dim
 
     mean, basis = pca_basis(word, dim)
