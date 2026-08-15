@@ -41,6 +41,7 @@ ime-score-teacher = "ime_context_tools.training.score_teacher_cross_encoder:main
 ime-distill = "ime_context_tools.training.distill_cross_encoder:main"
 ime-export-reranker = "ime_context_tools.training.export_reranker:main"
 ime-eval-student = "ime_context_tools.evaluation.evaluate_student_runtime:main"
+ime-eval-suite = "ime_context_tools.evaluation.run_eval_suite:main"
 ime-gen-romaji-table = "ime_context_tools.codegen.gen_romaji_table:main"
 ime-dict-extract = "ime_context_tools.dictionary.extract_dictionaries:main"
 ime-dict-rebuild = "ime_context_tools.dictionary.rebuild_calibrated_dictionary:main"

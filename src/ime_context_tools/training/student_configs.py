@@ -55,6 +55,9 @@ STUDENT_SPECS = {
     # standard's quality at half the parameters, depth (composition steps)
     # is what the character-level task pays for, not per-layer capacity.
     "deep-lite": StudentSpec("deep-lite", n_layers=6, dim=256, n_heads=4, hidden_dim=1024),
+    # v9 candidate: the depth verdict's upper tier — deep-lite's depth with
+    # room for the knowledge width the std experiment showed dev rewards.
+    "deep-mid": StudentSpec("deep-mid", n_layers=6, dim=384, n_heads=6, hidden_dim=1536),
     "standard": StudentSpec("standard", n_layers=4, dim=512, n_heads=8, hidden_dim=2048),
     "max": StudentSpec("max", n_layers=6, dim=768, n_heads=12, hidden_dim=3072),
 }
@@ -68,6 +71,7 @@ STUDENT_SPECS = {
 TRAINING_DEFAULTS = {
     "lite": {"epochs": 6, "learning_rate": 3e-4, "query_batch_size": 32, "grad_accum": 1},
     "deep-lite": {"epochs": 6, "learning_rate": 3e-4, "query_batch_size": 32, "grad_accum": 1},
+    "deep-mid": {"epochs": 6, "learning_rate": 2.5e-4, "query_batch_size": 24, "grad_accum": 2},
     "standard": {"epochs": 5, "learning_rate": 2.5e-4, "query_batch_size": 24, "grad_accum": 2},
     # 12x3 OOMed on long-context buckets (16GB card); 9x4 keeps the same
     # effective 36 rows with a 25% lower peak.
