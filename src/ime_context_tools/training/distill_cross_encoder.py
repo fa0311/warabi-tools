@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import shutil
 from dataclasses import dataclass
@@ -340,6 +341,12 @@ def main(argv: list[str] | None = None) -> int:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
+    # Hard VRAM budget: the caching allocator otherwise grows to the redline,
+    # where this machine's driver dies (irrecoverable) — a capped allocator
+    # raises a catchable OOM instead, which the retry wrappers can handle.
+    fraction = os.environ.get("WARABI_VRAM_FRACTION")
+    if fraction and device.type == "cuda":
+        torch.cuda.set_per_process_memory_fraction(float(fraction), device.index or 0)
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_dir)
     if args.init_from:
         model = DistilBertForSequenceClassification.from_pretrained(args.init_from).to(device)
