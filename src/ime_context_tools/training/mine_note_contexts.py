@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         "(dictionary-entry count is not the real candidate competition)",
     )
     parser.add_argument(
+        "--min-append", type=int, default=1,
+        help="bunsetsu mode: minimum trailing 助詞/助動詞 tokens. 2+ targets "
+        "conjugation chains (せ+られ+ない) the models keep failing",
+    )
+    parser.add_argument(
         "--proper-nouns",
         action="store_true",
         help="proper-noun mode: mine 固有名詞 tokens only and accept unique "
@@ -114,7 +119,7 @@ def mine_article_bunsetsu(
                 end += 1
             head_hira = kata2hira(reading)
             if (
-                end > index + 1
+                end - index - 1 >= args.min_append
                 and head_hira != surface
                 and dictionary.pair_exists(head_hira, surface)
             ):
